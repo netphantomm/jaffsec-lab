@@ -1,11 +1,22 @@
 from pathlib import Path
 import sqlite3
 
-from flask import Flask, jsonify, render_template_string, request
-from werkzeug.security import generate_password_hash
-
+from flask import (
+    Flask,
+    jsonify,
+    render_template_string,
+    request,
+    session,
+)
+from werkzeug.security import (
+    check_password_hash,
+    generate_password_hash,
+)
 
 app = Flask(__name__)
+app.config["SECRET_KEY"] = "localhost-dev-secret-change-me"
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 DB_PATH = Path(__file__).parent / "jaffshop.db"
 
@@ -425,10 +436,19 @@ def safe_search():
 
 
 
-@app.route("/api/orders/<int:order_id>")
+@app.get("/api/orders/<int:order_id>")
 def get_order(order_id):
+    current_user_id = session.get("user_id")
+
+    if current_user_id is None:
+        return jsonify({
+            "error": "authentication_required",
+        }), 401
+
     conn = get_db()
 
+    # Intentionally vulnerable:
+    # order_id is checked, but ownership is not.
     order = conn.execute("""
         SELECT id, user_id, item_name, total, status
         FROM orders
@@ -442,7 +462,11 @@ def get_order(order_id):
             "error": "order_not_found",
         }), 404
 
-    return jsonify(dict(order))
+    return jsonify({
+        "mode": "vulnerable",
+        "authenticated_user_id": current_user_id,
+        "order": dict(order),
+    })
 
 
 
@@ -946,6 +970,101 @@ def orders_lab():
 </html>
     """)
 
+@app.post("/api/login")
+def login():
+    data = request.get_json(silent=True) or {}
+
+    username = data.get("username", "").strip()
+    password = data.get("password", "")
+
+    if not username or not password:
+        return jsonify({
+            "error": "username_and_password_required",
+        }), 400
+
+    conn = get_db()
+
+    user = conn.execute("""
+        SELECT id, username, password_hash
+        FROM users
+        WHERE username = ?
+    """, (username,)).fetchone()
+
+    conn.close()
+
+    if user is None:
+        return jsonify({
+            "error": "invalid_credentials",
+        }), 401
+
+    if not check_password_hash(
+        user["password_hash"],
+        password,
+    ):
+        return jsonify({
+            "error": "invalid_credentials",
+        }), 401
+
+    session.clear()
+    session["user_id"] = user["id"]
+    session["username"] = user["username"]
+
+    return jsonify({
+        "status": "logged_in",
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+        },
+    })
+
+@app.get("/api/me")
+def current_user():
+    user_id = session.get("user_id")
+    username = session.get("username")
+
+    if user_id is None:
+        return jsonify({
+            "error": "authentication_required",
+        }), 401
+
+    return jsonify({
+        "id": user_id,
+        "username": username,
+    })
+
+@app.get("/api/orders-safe/<int:order_id>")
+def get_order_safe(order_id):
+    current_user_id = session.get("user_id")
+
+    if current_user_id is None:
+        return jsonify({
+            "error": "authentication_required",
+        }), 401
+
+    conn = get_db()
+
+    order = conn.execute("""
+        SELECT id, user_id, item_name, total, status
+        FROM orders
+        WHERE id = ?
+          AND user_id = ?
+    """, (
+        order_id,
+        current_user_id,
+    )).fetchone()
+
+    conn.close()
+
+    if order is None:
+        return jsonify({
+            "error": "order_not_found",
+        }), 404
+
+    return jsonify({
+        "mode": "safe",
+        "authenticated_user_id": current_user_id,
+        "order": dict(order),
+    }), 200
 
 if __name__ == "__main__":
     init_db()
