@@ -42,12 +42,14 @@ def init_db():
         )
     """)
 
-    # Users for the future authentication and IDOR lab.
+    # Users for authentication and access-control labs.
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
-            password_hash TEXT NOT NULL
+            password_hash TEXT NOT NULL,
+            display_name TEXT NOT NULL DEFAULT '',
+            role TEXT NOT NULL DEFAULT 'user'
         )
     """)
 
@@ -94,16 +96,25 @@ def init_db():
 
     # Create two test users.
     cur.executemany("""
-        INSERT OR IGNORE INTO users (username, password_hash)
-        VALUES (?, ?)
+        INSERT OR IGNORE INTO users (
+            username,
+            password_hash,
+            display_name,
+            role
+        )
+        VALUES (?, ?, ?, ?)
     """, [
         (
             "alice",
             generate_password_hash("AlicePass123!"),
+            "alice",
+            "user",
         ),
         (
             "bob",
             generate_password_hash("BobPass123!"),
+            "bob",
+            "user",
         ),
     ])
 
@@ -1065,6 +1076,581 @@ def get_order_safe(order_id):
         "authenticated_user_id": current_user_id,
         "order": dict(order),
     }), 200
+@app.get("/profile-lab")
+def profile_lab():
+    return render_template_string("""
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+
+    <title>JaffShop — Profile Security Lab</title>
+
+    <style>
+        :root {
+            color-scheme: dark;
+            --background: #09090b;
+            --panel: #18181b;
+            --border: #34343a;
+            --text: #f4f4f5;
+            --muted: #a1a1aa;
+            --accent: #22c55e;
+            --danger: #ef4444;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family:
+                Inter,
+                system-ui,
+                sans-serif;
+            color: var(--text);
+            background: var(--background);
+        }
+
+        .shell {
+            width: min(960px, calc(100% - 32px));
+            margin: 0 auto;
+            padding: 32px 0 64px;
+        }
+
+        nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 48px;
+        }
+
+        .brand {
+            color: var(--text);
+            font-weight: 800;
+            text-decoration: none;
+        }
+
+        .badge {
+            padding: 7px 11px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        h1 {
+            margin: 0 0 14px;
+            font-size: clamp(38px, 7vw, 68px);
+            line-height: 1;
+        }
+
+        .lead {
+            max-width: 680px;
+            margin-bottom: 32px;
+            color: var(--muted);
+            line-height: 1.7;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 20px;
+        }
+
+        .panel {
+            padding: 24px;
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            background: var(--panel);
+        }
+
+        .panel h2 {
+            margin-top: 0;
+        }
+
+        .button-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        button {
+            min-height: 44px;
+            padding: 0 16px;
+            border: 0;
+            border-radius: 10px;
+            background: var(--accent);
+            color: #041108;
+            font: inherit;
+            font-weight: 800;
+            cursor: pointer;
+        }
+
+        button.secondary {
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text);
+        }
+
+        .status {
+            min-height: 24px;
+            margin-top: 18px;
+            color: var(--muted);
+        }
+
+        pre {
+            min-height: 260px;
+            margin: 0;
+            padding: 18px;
+            overflow: auto;
+            border-radius: 12px;
+            background: #050505;
+            color: #86efac;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+       label {
+    display: block;
+    margin: 16px 0 8px;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+input {
+    width: 100%;
+    min-height: 44px;
+    padding: 0 13px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    outline: none;
+    background: #202024;
+    color: var(--text);
+    font: inherit;
+}
+
+input:focus {
+    border-color: var(--accent);
+}
+
+button.danger {
+    background: var(--danger);
+    color: white;
+}
+
+.update-buttons {
+    margin-top: 20px;
+}
+
+.full-width {
+    grid-column: 1 / -1;
+}
+
+@media (max-width: 720px) {
+    .grid {
+        grid-template-columns: 1fr;
+    }
+}
+    </style>
+</head>
+
+<body>
+    <div class="shell">
+        <nav>
+            <a class="brand" href="/">JAFFSHOP</a>
+            <span class="badge">LOCALHOST LAB</span>
+        </nav>
+
+        <h1>Profile Security Lab</h1>
+
+        <p class="lead">
+            Authenticate as a test user and inspect the profile properties
+            returned by the API.
+        </p>
+
+        <main class="grid">
+    <section class="panel">
+        <h2>1. Session</h2>
+
+        <div class="button-row">
+            <button id="login-alice" type="button">
+                Login as Alice
+            </button>
+
+            <button id="login-bob" type="button">
+                Login as Bob
+            </button>
+
+            <button
+                id="load-profile"
+                class="secondary"
+                type="button"
+            >
+                Load profile
+            </button>
+        </div>
+
+        <div id="status" class="status">
+            Not authenticated.
+        </div>
+    </section>
+
+    <section class="panel">
+        <h2>2. Profile update</h2>
+
+        <label for="display-name">Display name</label>
+
+        <input
+            id="display-name"
+            type="text"
+            value="Alice Admin"
+            autocomplete="off"
+        >
+
+        <label for="role">Role</label>
+
+        <input
+            id="role"
+            type="text"
+            value="admin"
+            autocomplete="off"
+        >
+
+        <div class="button-row update-buttons">
+            <button
+                id="update-vulnerable"
+                class="danger"
+                type="button"
+            >
+                Vulnerable PATCH
+            </button>
+
+            <button
+                id="update-safe"
+                type="button"
+            >
+                Safe PATCH
+            </button>
+
+            <button
+                id="check-admin"
+                class="secondary"
+                type="button"
+            >
+                Check admin access
+            </button>
+        </div>
+    </section>
+
+    <section class="panel full-width">
+        <h2>Raw API response</h2>
+        <pre id="raw-response">No response yet.</pre>
+    </section>
+</main>
+    </div>
+
+    <script>
+        const statusBox = document.querySelector("#status");
+        const rawResponse = document.querySelector("#raw-response");
+
+        async function showResponse(response) {
+            const data = await response.json();
+
+            rawResponse.textContent = JSON.stringify(
+                data,
+                null,
+                2
+            );
+
+            statusBox.textContent = `HTTP ${response.status}`;
+
+            return data;
+        }
+
+        async function login(username, password) {
+            statusBox.textContent = `Logging in as ${username}...`;
+
+            const response = await fetch("/api/login", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json"
+                },
+                body: JSON.stringify({
+                    username,
+                    password
+                })
+            });
+
+            await showResponse(response);
+        }
+
+        async function loadProfile() {
+            statusBox.textContent = "Loading profile...";
+
+            const response = await fetch("/api/profile", {
+                method: "GET",
+                headers: {
+                    "Accept": "application/json"
+                }
+            });
+
+            await showResponse(response);
+        }
+
+        document
+            .querySelector("#login-alice")
+            .addEventListener("click", () => {
+                login("alice", "AlicePass123!");
+            });
+
+        document
+            .querySelector("#login-bob")
+            .addEventListener("click", () => {
+                login("bob", "BobPass123!");
+            });
+
+        document
+            .querySelector("#load-profile")
+            .addEventListener("click", loadProfile);
+    async function updateProfile(endpoint) {
+    const displayName =
+        document.querySelector("#display-name").value;
+
+    const role =
+        document.querySelector("#role").value;
+
+    statusBox.textContent = `Sending PATCH ${endpoint}...`;
+
+    const response = await fetch(endpoint, {
+        method: "PATCH",
+        headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        },
+        body: JSON.stringify({
+            display_name: displayName,
+            role: role
+        })
+    });
+
+    await showResponse(response);
+}
+
+async function checkAdminAccess() {
+    statusBox.textContent = "Checking admin access...";
+
+    const response = await fetch("/api/admin", {
+        method: "GET",
+        headers: {
+            "Accept": "application/json"
+        }
+    });
+
+    await showResponse(response);
+}
+
+document
+    .querySelector("#update-vulnerable")
+    .addEventListener("click", () => {
+        updateProfile("/api/profile");
+    });
+
+document
+    .querySelector("#update-safe")
+    .addEventListener("click", () => {
+        updateProfile("/api/profile-safe");
+    });
+
+document
+    .querySelector("#check-admin")
+    .addEventListener("click", checkAdminAccess);
+</script>
+</body>
+</html>
+    """)
+
+@app.get("/api/profile")
+def get_profile():
+    current_user_id = session.get("user_id")
+
+    if current_user_id is None:
+        return jsonify({
+            "error": "authentication_required",
+        }), 401
+
+    conn = get_db()
+
+    user = conn.execute("""
+        SELECT id, username, display_name, role
+        FROM users
+        WHERE id = ?
+    """, (current_user_id,)).fetchone()
+
+    conn.close()
+
+    if user is None:
+        session.clear()
+
+        return jsonify({
+            "error": "user_not_found",
+        }), 404
+
+    return jsonify({
+        "profile": dict(user),
+    }), 200
+
+@app.patch("/api/profile")
+def update_profile_vulnerable():
+    current_user_id = session.get("user_id")
+
+    if current_user_id is None:
+        return jsonify({
+            "error": "authentication_required",
+        }), 401
+
+    data = request.get_json(silent=True) or {}
+
+    display_name = data.get("display_name")
+    role = data.get("role")
+
+    if display_name is None or role is None:
+        return jsonify({
+            "error": "display_name_and_role_required",
+        }), 400
+
+    conn = get_db()
+
+    # Intentionally vulnerable:
+    # the client is allowed to update the sensitive role field.
+    conn.execute("""
+        UPDATE users
+        SET display_name = ?,
+            role = ?
+        WHERE id = ?
+    """, (
+        display_name,
+        role,
+        current_user_id,
+    ))
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "mode": "vulnerable",
+        "updated_fields": {
+            "display_name": display_name,
+            "role": role,
+        },
+    }), 200
+
+
+@app.get("/api/admin")
+def admin_panel():
+    current_user_id = session.get("user_id")
+
+    if current_user_id is None:
+        return jsonify({
+            "error": "authentication_required",
+        }), 401
+
+    conn = get_db()
+
+    user = conn.execute("""
+        SELECT id, username, role
+        FROM users
+        WHERE id = ?
+    """, (current_user_id,)).fetchone()
+
+    conn.close()
+
+    if user is None:
+        session.clear()
+
+        return jsonify({
+            "error": "user_not_found",
+        }), 404
+
+    if user["role"] != "admin":
+        return jsonify({
+            "error": "admin_required",
+            "current_role": user["role"],
+        }), 403
+
+    return jsonify({
+        "message": "admin_access_granted",
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+        },
+    }), 200
+
+
+@app.patch("/api/profile-safe")
+def update_profile_safe():
+    current_user_id = session.get("user_id")
+
+    if current_user_id is None:
+        return jsonify({
+            "error": "authentication_required",
+        }), 401
+
+    data = request.get_json(silent=True)
+
+    if not isinstance(data, dict):
+        return jsonify({
+            "error": "json_object_required",
+        }), 400
+
+    allowed_fields = {"display_name"}
+    received_fields = set(data.keys())
+    forbidden_fields = sorted(received_fields - allowed_fields)
+
+    if forbidden_fields:
+        return jsonify({
+            "error": "forbidden_profile_fields",
+            "fields": forbidden_fields,
+        }), 400
+
+    display_name = data.get("display_name")
+
+    if not isinstance(display_name, str) or not display_name.strip():
+        return jsonify({
+            "error": "valid_display_name_required",
+        }), 400
+
+    display_name = display_name.strip()
+
+    conn = get_db()
+
+    conn.execute("""
+        UPDATE users
+        SET display_name = ?
+        WHERE id = ?
+    """, (
+        display_name,
+        current_user_id,
+    ))
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "mode": "safe",
+        "updated_fields": {
+            "display_name": display_name,
+        },
+    }), 200
+
 
 if __name__ == "__main__":
     init_db()
