@@ -1,105 +1,205 @@
- JaffSec Lab
+# JaffSec Lab
 
-JaffSec Lab is my personal cybersecurity portfolio project focused on Web/AppSec and Reverse Engineering.
+JaffSec Lab is a localhost cybersecurity portfolio project focused on
+Web and API Application Security.
 
-The goal is to turn each learned vulnerability into a portfolio artifact:
+The project turns each studied vulnerability into a reproducible portfolio
+artifact:
 
-- vulnerable code
-- localhost exploit scenario
-- secure fix
-- clinic-style writeup
-- reusable payload pattern
+- intentionally vulnerable code;
+- localhost attack scenario;
+- secure implementation;
+- vulnerable-versus-safe comparison;
+- clinic-style case study;
+- reusable security pattern.
 
-## Current MVP
+> This repository is intentionally vulnerable and must only be used in a
+> localhost, laboratory, CTF, or otherwise authorized environment.
 
-JaffShop: vulnerable Flask e-commerce lab.
+## Current Labs
 
-First case:
-- SQLi in product search endpoint `/api/search?q=`
-## Current Module
+### 1. SQL Injection — Product Search
 
-### JaffShop: SQL Injection Search Lab
+Demonstrates the difference between unsafe SQL string interpolation and
+parameterized queries.
 
-JaffShop is a small local Flask + SQLite web application.
+| Component | Endpoint |
+|---|---|
+| Browser lab | `/` |
+| Vulnerable API | `GET /api/search?q=` |
+| Safe API | `GET /api/search_safe?q=` |
 
-Current feature:
+Case study:
 
-- product list
-- vulnerable product search
-- safe product search
+- [SQL Injection Search Case](case-files/appsec-clinic/sqli-search-case.md)
 
-The goal of this module is to demonstrate the difference between unsafe SQL string interpolation and safe parameterized queries.
+Additional materials:
+
+- [SQL Injection Explanation](docs/sqli-search-explanation.md)
+- [SQL Injection Context Pattern](payload-pattern-bible/web/sqli-search-context.md)
+
+---
+
+### 2. IDOR / BOLA — Order Ownership
+
+Demonstrates broken object-level authorization.
+
+An authenticated user can request an order by its identifier. The vulnerable
+endpoint verifies that the order exists but does not verify that the
+authenticated user owns it.
+
+| Component | Endpoint |
+|---|---|
+| Browser lab | `/orders-lab` |
+| Vulnerable API | `GET /api/orders/<order_id>` |
+| Safe API | `GET /api/orders-safe/<order_id>` |
+
+The safe implementation includes both the object identifier and the
+authenticated user identifier in the database query.
+
+Case study:
+
+- [IDOR Orders Case](case-files/appsec-clinic/idor-orders-case.md)
+
+---
+
+### 3. Mass Assignment — Profile Role Escalation
+
+Demonstrates broken object-property authorization and vertical privilege
+escalation.
+
+The vulnerable profile endpoint accepts the sensitive `role` property from a
+client-controlled JSON body. A normal user can change their role from `user`
+to `admin` and access administrative functionality.
+
+| Component | Endpoint |
+|---|---|
+| Browser lab | `/profile-lab` |
+| Read profile | `GET /api/profile` |
+| Vulnerable update | `PATCH /api/profile` |
+| Safe update | `PATCH /api/profile-safe` |
+| Impact verification | `GET /api/admin` |
+
+The safe implementation uses an explicit allowlist:
+
+```python
+allowed_fields = {"display_name"}
+```
+
+Case study:
+
+- [Mass Assignment Profile Case](case-files/appsec-clinic/mass-assignment-profile-case.md)
+
+## Technology Stack
+
+- Python
+- Flask
+- SQLite
+- HTML
+- CSS
+- JavaScript
+- Git and GitHub
+
+## Project Structure
+
+```text
+jaffsec-lab/
+├── README.md
+├── jaffshop/
+│   └── app/
+│       └── app.py
+├── case-files/
+│   └── appsec-clinic/
+│       ├── sqli-search-case.md
+│       ├── idor-orders-case.md
+│       └── mass-assignment-profile-case.md
+├── docs/
+│   └── sqli-search-explanation.md
+└── payload-pattern-bible/
+    └── web/
+        └── sqli-search-context.md
+```
 
 ## How to Run
 
-From the project root:
+Clone the repository and enter the project directory:
+
+```bash
+git clone https://github.com/netphantomm/jaffsec-lab.git
+cd jaffsec-lab
+```
+
+Create and activate a virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Install the dependencies:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+Start JaffShop:
 
 ```bash
 python3 jaffshop/app/app.py
+```
 
-Open in browser:
+Open the labs:
 
+```text
 http://127.0.0.1:5000/
+http://127.0.0.1:5000/orders-lab
+http://127.0.0.1:5000/profile-lab
+```
 
-Browser Tests
-1. Normal Search
+## Test Accounts
 
-In Vulnerable Search, enter:
+The application creates two local test accounts:
 
-hoodie
+| Username | Password | Initial role |
+|---|---|---|
+| `alice` | `AlicePass123!` | `user` |
+| `bob` | `BobPass123!` | `user` |
 
-Expected result:
+These credentials are only for the local educational application.
 
-Kali Hoodie
+## Security Method
 
-2. No Results
+Each lab follows the same workflow:
 
-In Vulnerable Search, enter:
+1. Establish an authenticated baseline.
+2. Identify the controlled input.
+3. Identify the protected object or property.
+4. Send the vulnerable request.
+5. Verify the security impact.
+6. Implement a server-side fix.
+7. Repeat the same test against the safe implementation.
+8. Document the root cause, impact, and remediation.
 
-nonexistent
+## Current Focus
 
-Expected result:
+The current portfolio track is Web and API Application Security:
 
-No results.
+- HTTP and sessions;
+- authentication;
+- access control;
+- IDOR / BOLA;
+- property-level authorization;
+- SQL injection;
+- secure server-side validation;
+- vulnerable-versus-safe API design.
 
-3. SQL Injection Demo
+## Legal Scope
 
-In Vulnerable Search, enter:
+This project is for:
 
-nonexistent' OR 1=1--
+- localhost laboratories;
+- educational use;
+- CTF environments;
+- explicitly authorized security testing.
 
-Expected result:
-
-All products are returned.
-
-Why:
-
-The vulnerable endpoint inserts user input directly into the SQL query.
-4. Safe Search
-
-In Safe Search, enter the same input:
-
-nonexistent' OR 1=1--
-
-Expected result:
-
-No results.
-
-Why:
-
-The safe endpoint uses a parameterized SQL query, so the input is treated as data, not SQL logic.
-Vulnerable Code Pattern
-
-sql = f"SELECT id, name, description, price FROM products WHERE name LIKE '%{q}%'"
-
-Secure Code Pattern
-
-sql = "SELECT id, name, description, price FROM products WHERE name LIKE ?"
-rows = conn.execute(sql, (f"%{q}%",)).fetchall()
-
-Scope
-
-This project is for localhost / lab / educational use only.
-MD
-
-
+It must not be used against third-party systems without permission.
