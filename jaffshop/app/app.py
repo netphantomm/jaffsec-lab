@@ -1,5 +1,9 @@
+import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
+
+import jwt
 
 from flask import (
     Flask,
@@ -18,6 +22,17 @@ app.config["SECRET_KEY"] = "localhost-dev-secret-change-me"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
+JWT_ALGORITHM = "HS256"
+
+# Intentionally weak and guessable for the vulnerable localhost lab.
+JWT_VULNERABLE_SECRET = "secret"
+
+# Safe flow requires a strong secret supplied outside the repository.
+JWT_SAFE_SECRET = os.environ.get("JAFFSHOP_JWT_SECRET")
+
+JWT_ISSUER = "jaffshop-local"
+JWT_AUDIENCE = "jaffshop-api"
+
 DB_PATH = Path(__file__).parent / "jaffshop.db"
 
 
@@ -26,6 +41,30 @@ def get_db():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+
+def authenticate_user_credentials(username, password):
+    conn = get_db()
+
+    user = conn.execute("""
+        SELECT id, username, password_hash, role
+        FROM users
+        WHERE username = ?
+    """, (username,)).fetchone()
+
+    conn.close()
+
+    if user is None:
+        return None
+
+    if not check_password_hash(
+        user["password_hash"],
+        password,
+    ):
+        return None
+
+    return user
 
 
 def init_db():
@@ -981,6 +1020,270 @@ def orders_lab():
 </html>
     """)
 
+
+@app.post("/api/jwt/vulnerable/login")
+def jwt_vulnerable_login():
+    data = request.get_json(silent=True) or {}
+
+    username = data.get("username", "").strip()
+    password = data.get("password", "")
+
+    if not username or not password:
+        return jsonify({
+            "error": "username_and_password_required",
+        }), 400
+
+    user = authenticate_user_credentials(
+        username,
+        password,
+    )
+
+    if user is None:
+        return jsonify({
+            "error": "invalid_credentials",
+        }), 401
+
+    now = datetime.now(timezone.utc)
+
+    payload = {
+        "sub": str(user["id"]),
+        "username": user["username"],
+        "role": user["role"],
+        "iat": now,
+        "exp": now + timedelta(minutes=15),
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE,
+    }
+
+    # Intentionally vulnerable:
+    # the JWT is signed with a weak, guessable HMAC secret.
+    access_token = jwt.encode(
+        payload,
+        JWT_VULNERABLE_SECRET,
+        algorithm=JWT_ALGORITHM,
+    )
+
+    return jsonify({
+        "mode": "vulnerable",
+        "token_type": "Bearer",
+        "access_token": access_token,
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+        },
+    }), 200
+
+
+
+@app.get("/api/jwt/vulnerable/admin")
+def jwt_vulnerable_admin():
+    authorization = request.headers.get("Authorization", "")
+
+    if not authorization.startswith("Bearer "):
+        return jsonify({
+            "error": "bearer_token_required",
+        }), 401
+
+    access_token = authorization.removeprefix("Bearer ").strip()
+
+    if not access_token:
+        return jsonify({
+            "error": "bearer_token_required",
+        }), 401
+
+    try:
+        payload = jwt.decode(
+            access_token,
+            JWT_VULNERABLE_SECRET,
+            algorithms=[JWT_ALGORITHM],
+            issuer=JWT_ISSUER,
+            audience=JWT_AUDIENCE,
+        )
+    except jwt.ExpiredSignatureError:
+        return jsonify({
+            "error": "token_expired",
+        }), 401
+    except jwt.InvalidTokenError:
+        return jsonify({
+            "error": "invalid_token",
+        }), 401
+
+    # Intentionally vulnerable:
+    # authorization trusts the role claim from a JWT protected
+    # by a weak, guessable signing secret.
+    if payload.get("role") != "admin":
+        return jsonify({
+            "error": "admin_required",
+            "current_role": payload.get("role"),
+        }), 403
+
+    return jsonify({
+        "mode": "vulnerable",
+        "message": "admin_access_granted",
+        "token_claims": {
+            "sub": payload.get("sub"),
+            "username": payload.get("username"),
+            "role": payload.get("role"),
+        },
+    }), 200
+
+
+
+@app.post("/api/jwt/safe/login")
+def jwt_safe_login():
+    data = request.get_json(silent=True) or {}
+
+    username = data.get("username", "").strip()
+    password = data.get("password", "")
+
+    if not username or not password:
+        return jsonify({
+            "error": "username_and_password_required",
+        }), 400
+
+    if (
+        not JWT_SAFE_SECRET
+        or len(JWT_SAFE_SECRET.encode("utf-8")) < 32
+    ):
+        return jsonify({
+            "error": "safe_jwt_secret_not_configured",
+        }), 503
+
+    user = authenticate_user_credentials(
+        username,
+        password,
+    )
+
+    if user is None:
+        return jsonify({
+            "error": "invalid_credentials",
+        }), 401
+
+    now = datetime.now(timezone.utc)
+
+    payload = {
+        "sub": str(user["id"]),
+        "username": user["username"],
+        "iat": now,
+        "exp": now + timedelta(minutes=5),
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE,
+    }
+
+    access_token = jwt.encode(
+        payload,
+        JWT_SAFE_SECRET,
+        algorithm=JWT_ALGORITHM,
+    )
+
+    return jsonify({
+        "mode": "safe",
+        "token_type": "Bearer",
+        "access_token": access_token,
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+        },
+    }), 200
+
+
+
+@app.get("/api/jwt/safe/admin")
+def jwt_safe_admin():
+    authorization = request.headers.get("Authorization", "")
+
+    if not authorization.startswith("Bearer "):
+        return jsonify({
+            "error": "bearer_token_required",
+        }), 401
+
+    access_token = authorization.removeprefix("Bearer ").strip()
+
+    if not access_token:
+        return jsonify({
+            "error": "bearer_token_required",
+        }), 401
+
+    if (
+        not JWT_SAFE_SECRET
+        or len(JWT_SAFE_SECRET.encode("utf-8")) < 32
+    ):
+        return jsonify({
+            "error": "safe_jwt_secret_not_configured",
+        }), 503
+
+    try:
+        payload = jwt.decode(
+            access_token,
+            JWT_SAFE_SECRET,
+            algorithms=[JWT_ALGORITHM],
+            issuer=JWT_ISSUER,
+            audience=JWT_AUDIENCE,
+            options={
+                "require": [
+                    "sub",
+                    "iat",
+                    "exp",
+                    "iss",
+                    "aud",
+                ],
+            },
+        )
+    except jwt.ExpiredSignatureError:
+        return jsonify({
+            "error": "token_expired",
+        }), 401
+    except jwt.InvalidTokenError:
+        return jsonify({
+            "error": "invalid_token",
+        }), 401
+
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({
+            "error": "invalid_subject",
+        }), 401
+
+    conn = get_db()
+
+    user = conn.execute("""
+        SELECT id, username, role
+        FROM users
+        WHERE id = ?
+    """, (user_id,)).fetchone()
+
+    conn.close()
+
+    if user is None:
+        return jsonify({
+            "error": "user_not_found",
+        }), 404
+
+    # Safe authorization:
+    # the current role is loaded from the database,
+    # not trusted from a client-controlled JWT claim.
+    if user["role"] != "admin":
+        return jsonify({
+            "error": "admin_required",
+            "current_role": user["role"],
+            "authorization_source": "database",
+        }), 403
+
+    return jsonify({
+        "mode": "safe",
+        "message": "admin_access_granted",
+        "authorization_source": "database",
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+        },
+    }), 200
+
+
 @app.post("/api/login")
 def login():
     data = request.get_json(silent=True) or {}
@@ -1476,6 +1779,578 @@ document
 </body>
 </html>
     """)
+
+
+@app.get("/jwt-lab")
+def jwt_lab():
+    return render_template_string("""
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+
+    <title>JaffShop — JWT Security Lab</title>
+
+    <style>
+        :root {
+            color-scheme: dark;
+            --background: #09090b;
+            --panel: #18181b;
+            --border: #34343a;
+            --text: #f4f4f5;
+            --muted: #a1a1aa;
+            --accent: #22c55e;
+            --danger: #ef4444;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: Inter, system-ui, sans-serif;
+            color: var(--text);
+            background: var(--background);
+        }
+
+        .shell {
+            width: min(1050px, calc(100% - 32px));
+            margin: 0 auto;
+            padding: 32px 0 64px;
+        }
+
+        nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 48px;
+        }
+
+        .brand {
+            color: var(--text);
+            font-weight: 800;
+            text-decoration: none;
+        }
+
+        .badge {
+            padding: 7px 11px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        h1 {
+            margin: 0 0 14px;
+            font-size: clamp(38px, 7vw, 68px);
+            line-height: 1;
+        }
+
+        .lead {
+            max-width: 760px;
+            margin-bottom: 32px;
+            color: var(--muted);
+            line-height: 1.7;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 20px;
+        }
+
+        .panel {
+            padding: 24px;
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            background: var(--panel);
+        }
+
+        .panel h2 {
+            margin-top: 0;
+        }
+
+        .panel p {
+            color: var(--muted);
+            line-height: 1.6;
+        }
+
+        .button-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 18px;
+        }
+
+        button {
+            min-height: 44px;
+            padding: 0 16px;
+            border: 0;
+            border-radius: 10px;
+            background: var(--accent);
+            color: #041108;
+            font: inherit;
+            font-weight: 800;
+            cursor: pointer;
+        }
+
+        button.secondary {
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text);
+        }
+
+        button.danger {
+            background: var(--danger);
+            color: white;
+        }
+
+        label {
+            display: block;
+            margin: 16px 0 8px;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        input {
+            width: 100%;
+            min-height: 44px;
+            padding: 0 13px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            outline: none;
+            background: #202024;
+            color: var(--text);
+            font: inherit;
+        }
+
+        input:focus {
+            border-color: var(--accent);
+        }
+
+        .status {
+            min-height: 24px;
+            margin-top: 18px;
+            color: var(--muted);
+        }
+
+        .full-width {
+            grid-column: 1 / -1;
+        }
+
+        pre {
+            min-height: 210px;
+            margin: 0;
+            padding: 18px;
+            overflow: auto;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            border-radius: 12px;
+            background: #050505;
+            color: #86efac;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        @media (max-width: 720px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+
+            .full-width {
+                grid-column: auto;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="shell">
+        <nav>
+            <a class="brand" href="/">JAFFSHOP</a>
+            <span class="badge">LOCALHOST LAB</span>
+        </nav>
+
+        <h1>JWT Weak Secret Lab</h1>
+
+        <p class="lead">
+            Compare a JWT protected by a weak HMAC secret with a safer
+            implementation that uses a strong environment secret and loads
+            the current authorization role from the database.
+        </p>
+
+        <main class="grid">
+            <section class="panel">
+                <h2>1. Vulnerable flow</h2>
+
+                <p>
+                    Alice receives a signed JWT containing role=user.
+                    The weak secret can be used to create a valid token
+                    containing role=admin.
+                </p>
+
+                <div class="button-row">
+                    <button id="vulnerable-login" type="button">
+                        Login as Alice
+                    </button>
+
+                    <button
+                        id="vulnerable-admin"
+                        class="secondary"
+                        type="button"
+                    >
+                        Check vulnerable admin
+                    </button>
+                </div>
+
+                <label for="weak-secret">
+                    Candidate HMAC secret
+                </label>
+
+                <input
+                    id="weak-secret"
+                    type="text"
+                    value="secret"
+                    autocomplete="off"
+                >
+
+                <div class="button-row">
+                    <button
+                        id="forge-token"
+                        class="danger"
+                        type="button"
+                    >
+                        Forge role=admin
+                    </button>
+                </div>
+            </section>
+
+            <section class="panel">
+                <h2>2. Safe flow</h2>
+
+                <p>
+                    The safe JWT does not contain a role claim.
+                    The server verifies the strong signature and loads
+                    Alice's current role from SQLite.
+                </p>
+
+                <div class="button-row">
+                    <button id="safe-login" type="button">
+                        Safe login as Alice
+                    </button>
+
+                    <button
+                        id="safe-admin"
+                        class="secondary"
+                        type="button"
+                    >
+                        Check safe admin
+                    </button>
+
+                    <button
+                        id="forged-safe-admin"
+                        class="danger"
+                        type="button"
+                    >
+                        Send forged token to safe API
+                    </button>
+                </div>
+            </section>
+
+            <section class="panel full-width">
+                <h2>Decoded token</h2>
+                <pre id="token-output">No token yet.</pre>
+            </section>
+
+            <section class="panel full-width">
+                <h2>Raw API response</h2>
+                <div id="status" class="status">
+                    No request sent.
+                </div>
+                <pre id="raw-response">No response yet.</pre>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        let vulnerableToken = "";
+        let forgedToken = "";
+        let safeToken = "";
+
+        const statusBox =
+            document.querySelector("#status");
+
+        const rawResponse =
+            document.querySelector("#raw-response");
+
+        const tokenOutput =
+            document.querySelector("#token-output");
+
+        function base64UrlToBytes(value) {
+            const normalized = value
+                .replace(/-/g, "+")
+                .replace(/_/g, "/");
+
+            const padded = normalized
+                + "=".repeat((4 - normalized.length % 4) % 4);
+
+            const binary = atob(padded);
+
+            return Uint8Array.from(
+                binary,
+                character => character.charCodeAt(0)
+            );
+        }
+
+        function bytesToBase64Url(bytes) {
+            let binary = "";
+
+            for (const byte of bytes) {
+                binary += String.fromCharCode(byte);
+            }
+
+            return btoa(binary)
+                .replace(/\\+/g, "-")
+                .replace(/\\//g, "_")
+                .replace(/=+$/g, "");
+        }
+
+        function encodeJson(value) {
+            const bytes = new TextEncoder().encode(
+                JSON.stringify(value)
+            );
+
+            return bytesToBase64Url(bytes);
+        }
+
+        function decodeJwt(token) {
+            const parts = token.split(".");
+
+            if (parts.length !== 3) {
+                throw new Error("JWT must contain three parts.");
+            }
+
+            const decoder = new TextDecoder();
+
+            return {
+                header: JSON.parse(
+                    decoder.decode(base64UrlToBytes(parts[0]))
+                ),
+                payload: JSON.parse(
+                    decoder.decode(base64UrlToBytes(parts[1]))
+                )
+            };
+        }
+
+        function displayToken(label, token) {
+            const decoded = decodeJwt(token);
+
+            tokenOutput.textContent = JSON.stringify({
+                label,
+                header: decoded.header,
+                payload: decoded.payload,
+                token
+            }, null, 2);
+        }
+
+        async function showResponse(response) {
+            const responseText = await response.text();
+
+            let data;
+
+            try {
+                data = JSON.parse(responseText);
+            } catch {
+                data = {
+                    raw: responseText
+                };
+            }
+
+            statusBox.textContent =
+                `HTTP ${response.status}`;
+
+            rawResponse.textContent =
+                JSON.stringify(data, null, 2);
+
+            return data;
+        }
+
+        async function login(mode) {
+            statusBox.textContent =
+                `Logging in through ${mode} flow...`;
+
+            const response = await fetch(
+                `/api/jwt/${mode}/login`,
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Accept": "application/json"
+                    },
+                    body: JSON.stringify({
+                        username: "alice",
+                        password: "AlicePass123!"
+                    })
+                }
+            );
+
+            const data = await showResponse(response);
+
+            if (!response.ok || !data.access_token) {
+                return;
+            }
+
+            if (mode === "vulnerable") {
+                vulnerableToken = data.access_token;
+                forgedToken = "";
+                displayToken(
+                    "Vulnerable token",
+                    vulnerableToken
+                );
+            } else {
+                safeToken = data.access_token;
+                displayToken(
+                    "Safe token",
+                    safeToken
+                );
+            }
+        }
+
+        async function checkAdmin(endpoint, token) {
+            if (!token) {
+                statusBox.textContent =
+                    "Create the required token first.";
+                return;
+            }
+
+            statusBox.textContent =
+                `Sending GET ${endpoint}...`;
+
+            const response = await fetch(endpoint, {
+                method: "GET",
+                headers: {
+                    "Accept": "application/json",
+                    "Authorization": `Bearer ${token}`
+                }
+            });
+
+            await showResponse(response);
+        }
+
+        async function forgeVulnerableToken() {
+            if (!vulnerableToken) {
+                statusBox.textContent =
+                    "Login through the vulnerable flow first.";
+                return;
+            }
+
+            const decoded = decodeJwt(vulnerableToken);
+
+            decoded.payload.role = "admin";
+
+            const encodedHeader =
+                encodeJson(decoded.header);
+
+            const encodedPayload =
+                encodeJson(decoded.payload);
+
+            const signingInput =
+                `${encodedHeader}.${encodedPayload}`;
+
+            const candidateSecret =
+                document.querySelector("#weak-secret").value;
+
+            const cryptoKey =
+                await crypto.subtle.importKey(
+                    "raw",
+                    new TextEncoder().encode(candidateSecret),
+                    {
+                        name: "HMAC",
+                        hash: "SHA-256"
+                    },
+                    false,
+                    ["sign"]
+                );
+
+            const signature =
+                await crypto.subtle.sign(
+                    "HMAC",
+                    cryptoKey,
+                    new TextEncoder().encode(signingInput)
+                );
+
+            forgedToken =
+                `${signingInput}.`
+                + bytesToBase64Url(
+                    new Uint8Array(signature)
+                );
+
+            statusBox.textContent =
+                "Forged JWT created.";
+
+            displayToken(
+                "Forged vulnerable token",
+                forgedToken
+            );
+        }
+
+        document
+            .querySelector("#vulnerable-login")
+            .addEventListener("click", () => {
+                login("vulnerable");
+            });
+
+        document
+            .querySelector("#vulnerable-admin")
+            .addEventListener("click", () => {
+                checkAdmin(
+                    "/api/jwt/vulnerable/admin",
+                    forgedToken || vulnerableToken
+                );
+            });
+
+        document
+            .querySelector("#forge-token")
+            .addEventListener(
+                "click",
+                forgeVulnerableToken
+            );
+
+        document
+            .querySelector("#safe-login")
+            .addEventListener("click", () => {
+                login("safe");
+            });
+
+        document
+            .querySelector("#safe-admin")
+            .addEventListener("click", () => {
+                checkAdmin(
+                    "/api/jwt/safe/admin",
+                    safeToken
+                );
+            });
+
+        document
+            .querySelector("#forged-safe-admin")
+            .addEventListener("click", () => {
+                checkAdmin(
+                    "/api/jwt/safe/admin",
+                    forgedToken
+                );
+            });
+    </script>
+</body>
+</html>
+    """)
+
 
 @app.get("/api/profile")
 def get_profile():

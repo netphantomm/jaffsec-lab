@@ -90,6 +90,34 @@ Case study:
 
 - [Mass Assignment Profile Case](case-files/appsec-clinic/mass-assignment-profile-case.md)
 
+
+---
+
+### 4. JWT — Weak HMAC Signing Secret
+
+Demonstrates vertical privilege escalation caused by a weak JWT signing
+secret.
+
+The vulnerable implementation signs HS256 tokens using the guessable secret
+`secret` and trusts the `role` claim contained in the token. An authenticated
+user can create a valid token with `role=admin`.
+
+| Component | Endpoint |
+|---|---|
+| Browser lab | `/jwt-lab` |
+| Vulnerable login | `POST /api/jwt/vulnerable/login` |
+| Vulnerable admin | `GET /api/jwt/vulnerable/admin` |
+| Safe login | `POST /api/jwt/safe/login` |
+| Safe admin | `GET /api/jwt/safe/admin` |
+
+The safe implementation uses a strong secret supplied through the
+`JAFFSHOP_JWT_SECRET` environment variable and loads the current role from
+SQLite instead of trusting a role claim from the JWT.
+
+Case study:
+
+- [Weak JWT Signing Secret Case](case-files/appsec-clinic/jwt-weak-secret-case.md)
+
 ## Technology Stack
 
 - Python
@@ -112,7 +140,8 @@ jaffsec-lab/
 │   └── appsec-clinic/
 │       ├── sqli-search-case.md
 │       ├── idor-orders-case.md
-│       └── mass-assignment-profile-case.md
+│       ├── mass-assignment-profile-case.md
+│       └── jwt-weak-secret-case.md
 ├── docs/
 │   └── sqli-search-explanation.md
 └── payload-pattern-bible/
@@ -145,6 +174,8 @@ python3 -m pip install -r requirements.txt
 Start JaffShop:
 
 ```bash
+export JAFFSHOP_JWT_SECRET=$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")
+
 python3 jaffshop/app/app.py
 ```
 
@@ -154,6 +185,7 @@ Open the labs:
 http://127.0.0.1:5000/
 http://127.0.0.1:5000/orders-lab
 http://127.0.0.1:5000/profile-lab
+http://127.0.0.1:5000/jwt-lab
 ```
 
 ## Test Accounts
